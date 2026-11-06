@@ -14,7 +14,7 @@ what it did.
 
 | What | How | Notes |
 |---|---|---|
-| Toolchain | Rust stable (1.99+) with the MSVC target, Visual Studio Build Tools with a Windows SDK | Nothing else to install; ONNX Runtime and WebView2's loader are linked in. |
+| Toolchain | Rust stable (1.99+) with the MSVC target, Visual Studio Build Tools with a Windows SDK, CMake and NASM on `PATH` | ONNX Runtime and WebView2's loader are linked in. CMake and NASM build BoringSSL for `wreq` (the file host downloads, `download::filehost`); its build fails inside `%TEMP%`, so keep `CARGO_TARGET_DIR` out of it. |
 | Build | `cargo build --release -p modlight-app` in `app/` | `crates/modlight-app/build.rs` embeds upstream's `Modlight_Icon.ico`, the version information and a manifest (Windows 10/11, per-monitor DPI awareness v2, long paths, common controls 6, `asInvoker`). The program is a GUI program (`windows_subsystem = "windows"`); `--qa-shot`, `--help` and argument errors attach to the console they were started from. |
 | Package | `app\scripts\build-app.ps1 [-OutDir <dir>]` | `dist\Modlight\` (Modlight.exe, DirectML.dll, the licences) and `dist\Modlight-<version>-<build>-windows-<arch>.zip` with its SHA-256 and its description (`.json`), published to the server's Downloads when configured (see "Updates and publishing"). No installer (upstream's Inno Setup script is not ported): the folder runs where it is. |
 | ONNX Runtime | `ort` with the `directml` provider on Windows (`coreml` on macOS) | pyke publishes no Windows build with Core ML. `DirectML.dll` ships beside the exe (`copy-dylibs` puts it next to every build). |

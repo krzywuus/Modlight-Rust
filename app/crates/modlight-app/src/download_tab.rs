@@ -1,7 +1,8 @@
 //! The Download tab (`DownloadView`, `DownloadViewModel`): the address box, the YouTube
 //! panel in the corner, the notices about missing tools, the format and destination
-//! strip, and the queue. One download runs at a time; what a row is and how it changes
-//! lives in `modlight_core::download::item`, the run in `modlight_core::download::run`.
+//! strip, and the queue. As many rows run at once as the strip says (3 unless chosen);
+//! what a row is and how it changes lives in `modlight_core::download::item`, the run in
+//! `modlight_core::download::run` (yt-dlp) or `modlight_core::download::filehost`.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -12,9 +13,11 @@ use modlight_core::components;
 use modlight_core::download::cookies::YouTubeCookies;
 use modlight_core::download::item::{Delivery, DownloadItem, DownloadQueue, State};
 use modlight_core::download::run::{self, FormatResult, Progress, RunEvent, RunSpec};
+use modlight_core::download::link::links_in;
 use modlight_core::download::tool::{SearchPlaces, ToolPaths};
 use modlight_core::download::{
-    AudioFormat, Destination, DownloadFormat, DownloadLink, MediaKind, Quality, settings,
+    AudioFormat, Destination, DownloadFormat, DownloadLink, MAX_PARALLEL, MediaKind, Quality,
+    filehost, settings,
 };
 use modlight_core::icons;
 use modlight_core::l10n::{Arg, format, s, t};
@@ -35,12 +38,24 @@ struct Live {
     format: Option<FormatResult>,
 }
 
+/// The tab's sub-categories: one address for yt-dlp, or a list of file host links.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DownloadPage {
+    #[default]
+    Media,
+    Bulk,
+}
+
 /// The tab's state.
 #[derive(Default)]
 pub struct DownloadTab {
     pub queue: DownloadQueue,
+    pub page: DownloadPage,
     pub url_text: String,
     pub url_error: String,
+    /// The list pasted on the bulk page: an address a line, `#` comments.
+    pub bulk_text: String,
+    pub bulk_error: String,
     pub tools: ToolPaths,
     pub tools_read: bool,
     /// Something installed or replaced a tool: look again on the next frame.
@@ -60,9 +75,44 @@ pub struct DownloadTab {
     focus_url: bool,
 }
 
+/// What fetches a row: the file host's own download, or yt-dlp.
+enum Job {
+    Host(filehost::HostSpec),
+    Tool(RunSpec),
+}
+
 impl DownloadTab {
     fn tool_ready(&self) -> bool {
         self.tools.yt_dlp.is_some()
+    }
+
+    /// Every address in the box that a row can be made of.
+    fn links(&self) -> Vec<DownloadLink> {
+        links_in(&self.url_text)
+            .iter()
+            .filter_map(|text| DownloadLink::parse(text))
+            .collect()
+    }
+
+    /// The bulk page's file host links, and how many other addresses it leaves out.
+    fn bulk_links(&self) -> (Vec<DownloadLink>, usize) {
+        let found = links_in(&self.bulk_text);
+        let links: Vec<DownloadLink> = found
+            .iter()
+            .filter_map(|text| DownloadLink::parse(text))
+            .filter(|link| link.is_file_host)
+            .collect();
+        let skipped = found.len() - links.len();
+        (links, skipped)
+    }
+
+    /// The Download button works: yt-dlp is there, or every address in the box is the
+    /// file host's, which needs nothing installed.
+    fn can_start(&self) -> bool {
+        self.tool_ready() || {
+            let links = self.links();
+            !links.is_empty() && links.iter().all(|l| l.is_file_host)
+        }
     }
 }
 
@@ -120,13 +170,15 @@ impl AppState {
         }
     }
 
-    /// `StartAsync`: check the address, offer ffmpeg, ask for the folder, queue.
+    /// `StartAsync`: check the addresses, offer ffmpeg, ask for the folder, queue.
     pub fn downloads_start(&mut self) {
-        if DownloadLink::parse(&self.downloads.url_text).is_none() {
+        let links = self.downloads.links();
+        if links.is_empty() {
             self.downloads.url_error = t(s::Download_BadUrl).to_string();
             return;
         }
-        if self.downloads.tools.ffmpeg.is_none() {
+        // Only yt-dlp merges with ffmpeg; a file host's file comes whole.
+        if links.iter().any(|l| !l.is_file_host) && self.downloads.tools.ffmpeg.is_none() {
             // Offered, and the answer is not acted on: the download happens either way.
             if !crate::components_window::require(
                 self,
@@ -142,17 +194,38 @@ impl AppState {
     }
 
     fn downloads_continue_start(&mut self) {
-        let destination = settings::destination(&self.config);
-        let fixed = settings::folder(&self.config);
-        let mut chosen = None;
-        if destination != Destination::Modlight && fixed.is_empty() {
-            match self.pick_download_folder() {
-                Some(folder) => chosen = Some(folder),
-                // Closed the chooser: the address stays, nothing else happens.
-                None => return,
-            }
+        if let Some(chosen) = self.download_folder_choice() {
+            self.downloads_enqueue(chosen);
         }
-        self.downloads_enqueue(chosen);
+    }
+
+    /// The bulk page's Download: every file host link of the list, one row each.
+    pub fn downloads_start_bulk(&mut self) {
+        let (links, _) = self.downloads.bulk_links();
+        if links.is_empty() {
+            self.downloads.bulk_error = t(s::Download_BulkNone).to_string();
+            return;
+        }
+        let Some(chosen) = self.download_folder_choice() else {
+            return;
+        };
+        match self.downloads_enqueue_links(links, chosen) {
+            Ok(()) => {
+                self.downloads.bulk_text.clear();
+                self.downloads.bulk_error.clear();
+            }
+            Err(error) => self.downloads.bulk_error = error,
+        }
+    }
+
+    /// The folder asked for when no fixed one is set and a copy stays here. `None` when
+    /// the chooser was closed: what was typed stays, nothing else happens.
+    fn download_folder_choice(&mut self) -> Option<Option<PathBuf>> {
+        let destination = settings::destination(&self.config);
+        if destination != Destination::Modlight && settings::folder(&self.config).is_empty() {
+            return self.pick_download_folder().map(Some);
+        }
+        Some(None)
     }
 
     /// The folder chooser; in QA modes `<profile>/Downloads` without a panel.
@@ -165,12 +238,33 @@ impl AppState {
             .pick_folder()
     }
 
-    /// `Enqueue`.
+    /// `Enqueue`: one row per address in the box, in the order they were pasted.
     pub fn downloads_enqueue(&mut self, chosen: Option<PathBuf>) -> bool {
-        let Some(link) = DownloadLink::parse(&self.downloads.url_text) else {
+        let links = self.downloads.links();
+        if links.is_empty() {
             self.downloads.url_error = t(s::Download_BadUrl).to_string();
             return false;
-        };
+        }
+        match self.downloads_enqueue_links(links, chosen) {
+            Ok(()) => {
+                self.downloads.url_text.clear();
+                self.downloads.url_error.clear();
+                true
+            }
+            Err(error) => {
+                self.downloads.url_error = error;
+                false
+            }
+        }
+    }
+
+    /// One row per link, into the chosen folder (or the fixed one, or the scratch one
+    /// for Modlight only), then the pump. The error is ready to show.
+    fn downloads_enqueue_links(
+        &mut self,
+        links: Vec<DownloadLink>,
+        chosen: Option<PathBuf>,
+    ) -> Result<(), String> {
         let destination = settings::destination(&self.config);
         let scratch = destination == Destination::Modlight;
         let folder = if scratch {
@@ -181,53 +275,77 @@ impl AppState {
                 (!fixed.is_empty()).then(|| PathBuf::from(fixed))
             }) {
                 Some(folder) => folder,
-                None => {
-                    self.downloads.url_error = t(s::Download_FolderMissing).to_string();
-                    return false;
-                }
+                None => return Err(t(s::Download_FolderMissing).to_string()),
             }
         };
         let label = self.current_format_label();
         let format = self.current_format();
-        self.downloads
-            .queue
-            .enqueue(link, folder, scratch, destination, format, &label);
-        self.downloads.url_text.clear();
-        self.downloads.url_error.clear();
+        for link in links {
+            let label = if link.is_file_host {
+                t(s::Download_FormatFile).to_string()
+            } else {
+                label.clone()
+            };
+            self.downloads
+                .queue
+                .enqueue(link, folder.clone(), scratch, destination, format, &label);
+        }
         self.downloads_pump();
-        true
+        Ok(())
     }
 
-    /// `Pump`: start the next waiting row if nothing is running.
+    /// `Pump`: start waiting rows while fewer than the chosen number run. A yt-dlp row
+    /// waits for yt-dlp; a file host's row needs nothing installed.
     pub fn downloads_pump(&mut self) {
-        if self.mode == crate::app::Mode::Shot || !self.downloads.tool_ready() {
+        if self.mode == crate::app::Mode::Shot {
             return;
         }
-        let Some(id) = self.downloads.queue.next_to_start() else {
-            return;
-        };
-        let Some(tool) = self.downloads.tools.yt_dlp.clone() else {
-            return;
-        };
+        let limit = settings::parallel(&self.config);
+        let tool_ready = self.downloads.tool_ready();
+        while let Some(id) = self
+            .downloads
+            .queue
+            .next_to_start(limit, |item| item.link.is_file_host || tool_ready)
+        {
+            if !self.downloads_begin(id) {
+                break;
+            }
+        }
+    }
+
+    /// Start one row's run. `false` when it could not start.
+    fn downloads_begin(&mut self, id: u64) -> bool {
         let cookies = self.cookies();
         let tools = self.downloads.tools.clone();
         let profile = self.env.profile.clone();
         let waker = self.rt.waker();
         let live = self.downloads.live.clone();
+        let browser = settings::browser_profile(&self.config);
         let Some(item) = self.downloads.queue.get_mut(id) else {
-            return;
+            return false;
+        };
+        let job = if item.link.is_file_host {
+            Job::Host(filehost::HostSpec {
+                link: item.link.clone(),
+                folder: item.folder.clone(),
+                profile: browser,
+            })
+        } else {
+            let Some(tool) = tools.yt_dlp.clone() else {
+                return false;
+            };
+            Job::Tool(RunSpec {
+                tool,
+                cookies: cookies.file_for(&item.link),
+                link: item.link.clone(),
+                folder: item.folder.clone(),
+                format: item.format,
+                ffmpeg: tools.ffmpeg,
+                quickjs: tools.quickjs,
+            })
         };
         let Some(cancel) = item.start() else {
-            return;
-        };
-        let spec = RunSpec {
-            tool,
-            cookies: cookies.file_for(&item.link),
-            link: item.link.clone(),
-            folder: item.folder.clone(),
-            format: item.format,
-            ffmpeg: tools.ffmpeg,
-            quickjs: tools.quickjs,
+            return false;
         };
         let events = Arc::new(move |event: RunEvent| {
             if let Ok(mut map) = live.lock() {
@@ -241,9 +359,13 @@ impl AppState {
             waker();
         });
         self.rt.spawn(async move {
-            let outcome = run::run(&spec, &profile, events, &cancel).await;
+            let outcome = match job {
+                Job::Host(host) => filehost::run(&host, events, &cancel).await,
+                Job::Tool(spec) => run::run(&spec, &profile, events, &cancel).await,
+            };
             move |state: &mut AppState, _ctx: &egui::Context| state.downloads_finished(id, outcome)
         });
+        true
     }
 
     /// Fold what the runs said into their rows.
@@ -775,6 +897,10 @@ enum Ask {
     Quality(Quality),
     Audio(AudioFormat),
     Destination(Destination),
+    Parallel(usize),
+    Page(DownloadPage),
+    StartBulk,
+    Profile(Option<String>),
     ChooseFolder,
     ForgetFolder,
     ClearFinished,
@@ -809,6 +935,95 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
     let width = (rect.width() - 36.0).max(200.0);
     let mut y = rect.top() + 18.0;
 
+    // --- the sub-categories: one address for yt-dlp, or a list of file host links
+    let page = state.downloads.page;
+    let (seg, clicked) = segments(
+        ui,
+        &colors,
+        pos2(left, y),
+        &[
+            (icons::FILM, t(s::Download_PageMedia), page == DownloadPage::Media),
+            (icons::FILES, t(s::Download_PageBulk), page == DownloadPage::Bulk),
+        ],
+    );
+    match clicked {
+        Some(0) => asks.push(Ask::Page(DownloadPage::Media)),
+        Some(1) => asks.push(Ask::Page(DownloadPage::Bulk)),
+        _ => {}
+    }
+    y = seg.bottom() + 14.0;
+    let mut config_rect = None;
+    match page {
+        DownloadPage::Media => {
+            let (bottom, config) = media_section(ui, state, &colors, left, width, y, &mut asks);
+            y = bottom;
+            config_rect = Some(config);
+        }
+        DownloadPage::Bulk => y = bulk_section(ui, state, &colors, left, width, y, &mut asks),
+    }
+
+    // --- the queue, or the empty card
+    let has_items = !state.downloads.queue.items.is_empty();
+    if has_items {
+        y += 16.0;
+        let label = one_line(
+            ui,
+            t(s::Download_QueueTitle),
+            13.0,
+            Weight::SemiBold,
+            colors.text(),
+            width,
+        );
+        let lh = label.size().y;
+        painter.galley(pos2(left, y + (30.0 - lh) / 2.0), label, colors.text());
+        if state.downloads.queue.has_finished() {
+            let quiet = quiet_look(&colors);
+            let clear = t(s::Download_ClearFinished);
+            let w = button_width(ui, &quiet, Content::label(clear));
+            let r = Rect::from_min_size(pos2(left + width - w, y), vec2(w, 30.0));
+            if button_here(ui, &colors, &quiet, Content::label(clear), true, r).clicked() {
+                asks.push(Ask::ClearFinished);
+            }
+        }
+        y += 30.0 + 8.0;
+        let area = Rect::from_min_max(pos2(rect.left(), y), rect.max);
+        queue_rows(ui, state, &colors, area, &mut asks);
+    } else if page == DownloadPage::Media {
+        let area = Rect::from_min_max(pos2(rect.left(), y), rect.max);
+        empty_card(ui, state, &colors, area);
+    }
+
+    if state.downloads.popup_open
+        && let Some(config_rect) = config_rect
+    {
+        youtube_panel(ui, state, &colors, config_rect, &mut asks);
+    }
+    if state
+        .downloads
+        .queue
+        .items
+        .iter()
+        .any(DownloadItem::is_active)
+    {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(200));
+    }
+    handle(state, asks);
+}
+
+/// The yt-dlp page: the hint and the YouTube button, the address, the notices about
+/// missing tools and the strip. Returns the bottom edge and the YouTube button.
+#[allow(clippy::too_many_arguments)]
+fn media_section(
+    ui: &mut Ui,
+    state: &mut AppState,
+    colors: &Colors,
+    left: f32,
+    width: f32,
+    mut y: f32,
+    asks: &mut Vec<Ask>,
+) -> (f32, Rect) {
+    let painter = ui.painter().clone();
     // --- the header: the hint and the YouTube button in the corner
     let config_label = t(s::Download_YouTubeConfig);
     let config_w = 12.0
@@ -847,8 +1062,8 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
     let status_text = sign_in_status(state);
     let response = button_here(
         ui,
-        &colors,
-        &config_look(&colors),
+        colors,
+        &config_look(colors),
         Content::label(""),
         true,
         config_rect,
@@ -860,7 +1075,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
             pos2(cx + 4.5, config_rect.center().y),
             4.5,
             dot_color(
-                &colors,
+                colors,
                 state.downloads.signed_in,
                 state.downloads.signing_in,
             ),
@@ -892,7 +1107,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
 
     // --- the address and the Download button
     let download_label = t(s::Download_Start);
-    let primary = primary_look(&colors);
+    let primary = primary_look(colors);
     let dl_w = button_width(ui, &primary, Content::both(icons::DOWNLOAD, download_label));
     let field_rect = Rect::from_min_size(pos2(left, y), vec2(width - dl_w - 8.0, 38.0));
     let mut field_ui = ui.new_child(
@@ -901,6 +1116,19 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
     let field_id = Id::new("download-url");
+    // A pasted list (an address a line, `#` comments) keeps only its addresses: the
+    // one-line box would join its lines, comments and all.
+    if ui.memory(|m| m.has_focus(field_id)) {
+        ui.ctx().input_mut(|input| {
+            for event in &mut input.events {
+                if let egui::Event::Paste(text) = event
+                    && text.contains('\n')
+                {
+                    *text = links_in(text).join(" ");
+                }
+            }
+        });
+    }
     let before = state.downloads.url_text.clone();
     let field = Field {
         hint: t(s::Download_UrlWatermark),
@@ -910,7 +1138,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
         id: Some(field_id),
         ..Field::new(&mut state.downloads.url_text)
     }
-    .show(&mut field_ui, &colors);
+    .show(&mut field_ui, colors);
     if state.downloads.url_text != before {
         // The complaint was about what was in the box.
         state.downloads.url_error.clear();
@@ -922,7 +1150,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
         asks.push(Ask::Start);
     }
     let dl_rect = Rect::from_min_size(pos2(left + width - dl_w, y), vec2(dl_w, 38.0));
-    let ready = state.downloads.tool_ready();
+    let ready = state.downloads.can_start();
     let mut look = primary.clone();
     if !ready {
         look.fill = Fill::Solid(colors.control_background_disabled());
@@ -931,7 +1159,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
     }
     if button_here(
         ui,
-        &colors,
+        colors,
         &look,
         Content::both(icons::DOWNLOAD, download_label),
         ready,
@@ -963,7 +1191,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
         y += 12.0;
         y = notice(
             ui,
-            &colors,
+            colors,
             pos2(left, y),
             width,
             t(s::Download_ToolMissingTitle),
@@ -976,7 +1204,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
                 ),
                 (icons::REFRESH_CW, t(s::Download_ToolRecheck), Ask::Recheck),
             ],
-            &mut asks,
+            asks,
         );
     }
     let format = state.current_format();
@@ -989,7 +1217,7 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
         };
         y = notice(
             ui,
-            &colors,
+            colors,
             pos2(left, y),
             width,
             t(s::Download_FFmpegMissingTitle),
@@ -1002,59 +1230,142 @@ pub fn ui(ui: &mut Ui, state: &mut AppState, rect: Rect) {
                 ),
                 (icons::REFRESH_CW, t(s::Download_ToolRecheck), Ask::Recheck),
             ],
-            &mut asks,
+            asks,
         );
     }
 
     // --- the strip: format, destination, folder
     y += 12.0;
-    y = settings_bar(ui, state, &colors, pos2(left, y), width, &mut asks);
+    y = settings_bar(ui, state, colors, pos2(left, y), width, true, asks);
+    (y, config_rect)
+}
 
-    // --- the queue, or the empty card
-    let has_items = !state.downloads.queue.items.is_empty();
-    if has_items {
-        y += 16.0;
-        let label = one_line(
+/// The bulk page (`ff_dl.py`'s links.txt): what it takes, a box for the list, how many
+/// links it holds, Download all, and the strip without the format row. Returns the
+/// bottom edge.
+#[allow(clippy::too_many_arguments)]
+fn bulk_section(
+    ui: &mut Ui,
+    state: &mut AppState,
+    colors: &Colors,
+    left: f32,
+    width: f32,
+    mut y: f32,
+    asks: &mut Vec<Ask>,
+) -> f32 {
+    let painter = ui.painter().clone();
+    let hint = galley(
+        ui,
+        &format(t(s::Download_BulkHint), &[Arg::from(filehost::HOST)]),
+        13.0,
+        Weight::Normal,
+        colors.text_secondary(),
+        width,
+    );
+    let hint_h = hint.size().y;
+    painter.galley(pos2(left, y), hint, colors.text_secondary());
+    y += hint_h + 10.0;
+
+    // The list: an address a line, scrolled when long.
+    let field_id = Id::new("download-bulk");
+    let focused = ui.memory(|m| m.has_focus(field_id));
+    let box_rect = Rect::from_min_size(pos2(left, y), vec2(width, 150.0));
+    painter.rect_filled(box_rect, 8.0, colors.control_background());
+    painter.rect_stroke(
+        box_rect,
+        8.0,
+        if focused {
+            Stroke::new(2.0, colors.focus())
+        } else {
+            Stroke::new(1.0, colors.border())
+        },
+        StrokeKind::Inside,
+    );
+    let mut box_ui = ui.new_child(egui::UiBuilder::new().max_rect(box_rect.shrink(1.0)));
+    let before = state.downloads.bulk_text.clone();
+    egui::ScrollArea::vertical()
+        .id_salt("download-bulk-scroll")
+        .auto_shrink([false, false])
+        .show(&mut box_ui, |ui| {
+            let watermark = egui::RichText::new(t(s::Download_BulkWatermark))
+                .font(egui::FontId::monospace(13.0))
+                .color(colors.text_secondary().gamma_multiply(0.75));
+            egui::TextEdit::multiline(&mut state.downloads.bulk_text)
+                .id(field_id)
+                .font(egui::FontId::monospace(13.0))
+                .text_color(colors.text())
+                .frame(egui::Frame::NONE.inner_margin(10))
+                .desired_width(f32::INFINITY)
+                .min_size(box_rect.size() - vec2(2.0, 2.0))
+                .hint_text(watermark)
+                .show(ui);
+        });
+    if state.downloads.bulk_text != before {
+        state.downloads.bulk_error.clear();
+    }
+    y += box_rect.height() + 10.0;
+
+    // How many links the list holds, and Download all.
+    let (links, skipped) = state.downloads.bulk_links();
+    let mut count = format(t(s::Download_BulkCount), &[Arg::from(links.len())]);
+    if skipped > 0 {
+        count.push_str(&format(t(s::Download_BulkSkipped), &[Arg::from(skipped)]));
+    }
+    let primary = primary_look(colors);
+    let start_label = t(s::Download_BulkStart);
+    let start_w = button_width(ui, &primary, Content::both(icons::DOWNLOAD, start_label));
+    let count_text = one_line(
+        ui,
+        &count,
+        13.0,
+        Weight::Normal,
+        colors.text_secondary(),
+        width - start_w - 12.0,
+    );
+    let count_h = count_text.size().y;
+    painter.galley(
+        pos2(left, y + (38.0 - count_h) / 2.0),
+        count_text,
+        colors.text_secondary(),
+    );
+    let ready = !links.is_empty();
+    let mut look = primary.clone();
+    if !ready {
+        look.fill = Fill::Solid(colors.control_background_disabled());
+        look.text = colors.text_secondary();
+        look.string_text = Some(colors.text_secondary());
+    }
+    let start_rect = Rect::from_min_size(pos2(left + width - start_w, y), vec2(start_w, 38.0));
+    if button_here(
+        ui,
+        colors,
+        &look,
+        Content::both(icons::DOWNLOAD, start_label),
+        ready,
+        start_rect,
+    )
+    .clicked()
+    {
+        asks.push(Ask::StartBulk);
+    }
+    y += 38.0;
+    if !state.downloads.bulk_error.is_empty() {
+        y += 10.0;
+        let g = galley(
             ui,
-            t(s::Download_QueueTitle),
+            &state.downloads.bulk_error,
             13.0,
-            Weight::SemiBold,
-            colors.text(),
+            Weight::Normal,
+            colors.cancel_border(),
             width,
         );
-        let lh = label.size().y;
-        painter.galley(pos2(left, y + (30.0 - lh) / 2.0), label, colors.text());
-        if state.downloads.queue.has_finished() {
-            let quiet = quiet_look(&colors);
-            let clear = t(s::Download_ClearFinished);
-            let w = button_width(ui, &quiet, Content::label(clear));
-            let r = Rect::from_min_size(pos2(left + width - w, y), vec2(w, 30.0));
-            if button_here(ui, &colors, &quiet, Content::label(clear), true, r).clicked() {
-                asks.push(Ask::ClearFinished);
-            }
-        }
-        y += 30.0 + 8.0;
-        let area = Rect::from_min_max(pos2(rect.left(), y), rect.max);
-        queue_rows(ui, state, &colors, area, &mut asks);
-    } else {
-        let area = Rect::from_min_max(pos2(rect.left(), y), rect.max);
-        empty_card(ui, state, &colors, area);
+        let h = g.size().y;
+        painter.galley(pos2(left, y), g, colors.cancel_border());
+        y += h;
     }
 
-    if state.downloads.popup_open {
-        youtube_panel(ui, state, &colors, config_rect, &mut asks);
-    }
-    if state
-        .downloads
-        .queue
-        .items
-        .iter()
-        .any(DownloadItem::is_active)
-    {
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(200));
-    }
-    handle(state, asks);
+    y += 12.0;
+    settings_bar(ui, state, colors, pos2(left, y), width, false, asks)
 }
 
 fn sign_in_status(state: &AppState) -> String {
@@ -1139,6 +1450,7 @@ fn settings_bar(
     colors: &Colors,
     at: egui::Pos2,
     width: f32,
+    show_format: bool,
     asks: &mut Vec<Ask>,
 ) -> f32 {
     let destination = settings::destination(&state.config);
@@ -1169,110 +1481,167 @@ fn settings_bar(
     let label =
         |ui: &Ui, text: &str| one_line(ui, text, 13.0, Weight::SemiBold, colors.text(), 300.0);
 
-    // Format: Video / Audio, the quality or container picker, and what it means.
-    let format_label = label(ui, t(s::Download_FormatLabel));
-    let (fw, fh) = (format_label.size().x, format_label.size().y);
-    painter.galley(
-        pos2(left, y + (row_h - fh) / 2.0),
-        format_label,
-        colors.text(),
-    );
-    let video = format.kind == MediaKind::Video;
-    let (seg, clicked) = segments(
-        ui,
-        colors,
-        pos2(left + fw + 12.0, y),
-        &[
-            (icons::FILM, t(s::Download_FormatVideo), video),
-            (icons::MUSIC, t(s::Download_FormatAudio), !video),
-        ],
-    );
-    match clicked {
-        Some(0) => asks.push(Ask::Kind(MediaKind::Video)),
-        Some(1) => asks.push(Ask::Kind(MediaKind::Audio)),
-        _ => {}
-    }
-    let quality_label = label(
-        ui,
-        if video {
-            t(s::Download_QualityLabel)
-        } else {
-            t(s::Download_AudioFormatLabel)
-        },
-    );
-    let (qw, qh) = (quality_label.size().x, quality_label.size().y);
-    let qx = seg.right() + 12.0;
-    painter.galley(
-        pos2(qx, y + (row_h - qh) / 2.0),
-        quality_label,
-        colors.text(),
-    );
-    let combo_x = qx + qw + 12.0;
-    let combo_w = 150.0;
-    let mut combo_ui = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(Rect::from_min_size(
-                pos2(combo_x, y + 2.0),
-                vec2(combo_w, 30.0),
-            ))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    let hint = format_hint(&format);
-    if video {
-        let options: Vec<(Quality, String)> =
-            Quality::ALL.iter().map(|q| (*q, video_label(*q))).collect();
-        if let Some(picked) = combo_rounded(
-            &mut combo_ui,
+    if show_format {
+        // Format: Video / Audio, the quality or container picker, and what it means.
+        let format_label = label(ui, t(s::Download_FormatLabel));
+        let (fw, fh) = (format_label.size().x, format_label.size().y);
+        painter.galley(
+            pos2(left, y + (row_h - fh) / 2.0),
+            format_label,
+            colors.text(),
+        );
+        let video = format.kind == MediaKind::Video;
+        let (seg, clicked) = segments(
+            ui,
             colors,
-            "download-quality",
-            combo_w,
-            30.0,
-            8.0,
-            &format.quality,
-            &options,
-        ) {
-            asks.push(Ask::Quality(picked));
+            pos2(left + fw + 12.0, y),
+            &[
+                (icons::FILM, t(s::Download_FormatVideo), video),
+                (icons::MUSIC, t(s::Download_FormatAudio), !video),
+            ],
+        );
+        match clicked {
+            Some(0) => asks.push(Ask::Kind(MediaKind::Video)),
+            Some(1) => asks.push(Ask::Kind(MediaKind::Audio)),
+            _ => {}
+        }
+        let quality_label = label(
+            ui,
+            if video {
+                t(s::Download_QualityLabel)
+            } else {
+                t(s::Download_AudioFormatLabel)
+            },
+        );
+        let (qw, qh) = (quality_label.size().x, quality_label.size().y);
+        let qx = seg.right() + 12.0;
+        painter.galley(
+            pos2(qx, y + (row_h - qh) / 2.0),
+            quality_label,
+            colors.text(),
+        );
+        let combo_x = qx + qw + 12.0;
+        let combo_w = 150.0;
+        let mut combo_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(
+                    pos2(combo_x, y + 2.0),
+                    vec2(combo_w, 30.0),
+                ))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let hint = format_hint(&format);
+        if video {
+            let options: Vec<(Quality, String)> =
+                Quality::ALL.iter().map(|q| (*q, video_label(*q))).collect();
+            if let Some(picked) = combo_rounded(
+                &mut combo_ui,
+                colors,
+                "download-quality",
+                combo_w,
+                30.0,
+                8.0,
+                &format.quality,
+                &options,
+            ) {
+                asks.push(Ask::Quality(picked));
+            }
+        } else {
+            let options: Vec<(AudioFormat, String)> = AudioFormat::ALL
+                .iter()
+                .map(|a| (*a, audio_label(*a).to_string()))
+                .collect();
+            if let Some(picked) = combo_rounded(
+                &mut combo_ui,
+                colors,
+                "download-audio",
+                combo_w,
+                30.0,
+                8.0,
+                &format.audio_format,
+                &options,
+            ) {
+                asks.push(Ask::Audio(picked));
+            }
+        }
+        ui.interact(
+            Rect::from_min_size(pos2(combo_x, y + 2.0), vec2(combo_w, 30.0)),
+            Id::new("download-quality-tip"),
+            Sense::hover(),
+        )
+        .on_hover_text(hint);
+        let note_x = combo_x + combo_w + 12.0;
+        if right - note_x > 30.0 {
+            let note_text = format_note(&format);
+            let note = one_line(
+                ui,
+                &note_text,
+                13.0,
+                Weight::Normal,
+                colors.text_secondary(),
+                right - note_x,
+            );
+            let nh = note.size().y;
+            let note_rect = Rect::from_min_size(pos2(note_x, y + (row_h - nh) / 2.0), note.size());
+            painter.galley(note_rect.min, note, colors.text_secondary());
+            ui.interact(note_rect, Id::new("download-format-note"), Sense::hover())
+                .on_hover_text(note_text);
         }
     } else {
-        let options: Vec<(AudioFormat, String)> = AudioFormat::ALL
-            .iter()
-            .map(|a| (*a, audio_label(*a).to_string()))
-            .collect();
+        // The bulk page: the browser profile the site sees, Automatic or one alone.
+        let profile_label = label(ui, t(s::Download_ProfileLabel));
+        let (pw, ph) = (profile_label.size().x, profile_label.size().y);
+        painter.galley(
+            pos2(left, y + (row_h - ph) / 2.0),
+            profile_label,
+            colors.text(),
+        );
+        let combo_x = left + pw + 12.0;
+        let combo_w = 170.0;
+        let mut combo_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(Rect::from_min_size(
+                    pos2(combo_x, y + 2.0),
+                    vec2(combo_w, 30.0),
+                ))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+        );
+        let mut options: Vec<(Option<String>, String)> =
+            vec![(None, t(s::Download_ProfileAuto).to_string())];
+        options.extend(
+            filehost::BROWSER_PROFILES
+                .iter()
+                .map(|name| (Some(name.to_string()), filehost::profile_label(name))),
+        );
         if let Some(picked) = combo_rounded(
             &mut combo_ui,
             colors,
-            "download-audio",
+            "download-browser-profile",
             combo_w,
             30.0,
             8.0,
-            &format.audio_format,
+            &settings::browser_profile(&state.config),
             &options,
         ) {
-            asks.push(Ask::Audio(picked));
+            asks.push(Ask::Profile(picked));
         }
-    }
-    ui.interact(
-        Rect::from_min_size(pos2(combo_x, y + 2.0), vec2(combo_w, 30.0)),
-        Id::new("download-quality-tip"),
-        Sense::hover(),
-    )
-    .on_hover_text(hint);
-    let note_x = combo_x + combo_w + 12.0;
-    if right - note_x > 30.0 {
-        let note_text = format_note(&format);
-        let note = one_line(
-            ui,
-            &note_text,
-            13.0,
-            Weight::Normal,
-            colors.text_secondary(),
-            right - note_x,
-        );
-        let nh = note.size().y;
-        let note_rect = Rect::from_min_size(pos2(note_x, y + (row_h - nh) / 2.0), note.size());
-        painter.galley(note_rect.min, note, colors.text_secondary());
-        ui.interact(note_rect, Id::new("download-format-note"), Sense::hover())
-            .on_hover_text(note_text);
+        let note_x = combo_x + combo_w + 12.0;
+        if right - note_x > 30.0 {
+            let note_text = t(s::Download_ProfileNote);
+            let note = one_line(
+                ui,
+                note_text,
+                13.0,
+                Weight::Normal,
+                colors.text_secondary(),
+                right - note_x,
+            );
+            let nh = note.size().y;
+            let note_rect = Rect::from_min_size(pos2(note_x, y + (row_h - nh) / 2.0), note.size());
+            painter.galley(note_rect.min, note, colors.text_secondary());
+            ui.interact(note_rect, Id::new("download-profile-note"), Sense::hover())
+                .on_hover_text(note_text);
+        }
     }
     y += row_h + 10.0;
 
@@ -1309,6 +1678,45 @@ fn settings_bar(
     if let Some(index) = clicked {
         asks.push(Ask::Destination(Destination::ALL[index]));
     }
+    // How many rows download at once, at the row's right end.
+    let parallel_label = label(ui, t(s::Download_ParallelLabel));
+    let (pw, ph) = (parallel_label.size().x, parallel_label.size().y);
+    let parallel_combo_w = 64.0;
+    let parallel_x = right - parallel_combo_w - 8.0 - pw;
+    painter.galley(
+        pos2(parallel_x, y + (row_h - ph) / 2.0),
+        parallel_label,
+        colors.text(),
+    );
+    let combo_rect = Rect::from_min_size(
+        pos2(right - parallel_combo_w, y + 2.0),
+        vec2(parallel_combo_w, 30.0),
+    );
+    let mut combo_ui = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(combo_rect)
+            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    );
+    let counts: Vec<(usize, String)> = (1..=MAX_PARALLEL).map(|n| (n, n.to_string())).collect();
+    if let Some(picked) = combo_rounded(
+        &mut combo_ui,
+        colors,
+        "download-parallel",
+        parallel_combo_w,
+        30.0,
+        8.0,
+        &settings::parallel(&state.config),
+        &counts,
+    ) {
+        asks.push(Ask::Parallel(picked));
+    }
+    ui.interact(
+        Rect::from_min_max(pos2(parallel_x, y), combo_rect.max),
+        Id::new("download-parallel-tip"),
+        Sense::hover(),
+    )
+    .on_hover_text(t(s::Download_ParallelHint));
+    let right = parallel_x - 12.0;
     let note_x = seg.right() + 12.0;
     if right - note_x > 30.0 {
         let text = match destination {
@@ -2029,6 +2437,22 @@ fn handle(state: &mut AppState, asks: Vec<Ask>) {
             Ask::Destination(destination) => {
                 settings::set_destination(&mut state.config, destination);
                 state.save_config();
+            }
+            Ask::Page(page) => {
+                state.downloads.page = page;
+                state.downloads.popup_open = false;
+            }
+            Ask::StartBulk => state.downloads_start_bulk(),
+            Ask::Profile(profile) => {
+                settings::set_browser_profile(&mut state.config, profile.as_deref());
+                state.save_config();
+            }
+            Ask::Parallel(count) => {
+                settings::set_parallel(&mut state.config, count);
+                state.save_config();
+                // A higher number starts waiting rows now; a lower one lets the running
+                // rows finish.
+                state.downloads_pump();
             }
             Ask::ChooseFolder => {
                 if let Some(folder) = state.pick_download_folder() {

@@ -23,8 +23,9 @@
 #   MODLIGHT_PUBLISH_NOTE     what changed, shown to people with the update
 # A failed publish does not fail the build; it says how to try again.
 #
-# Needs: the Rust toolchain (cargo on PATH or in %USERPROFILE%\.cargo\bin) and the
-# MSVC build tools with a Windows SDK; git for the commit. Nothing outside the output
+# Needs: the Rust toolchain (cargo on PATH or in %USERPROFILE%\.cargo\bin), the MSVC
+# build tools with a Windows SDK, CMake and NASM (BoringSSL, under wreq); git for the
+# commit. Nothing outside the output
 # directory and cargo's target directory is written. The folder runs as it is (no
 # installer): settings live in Documents\Modlight, and "Start with Windows" and the
 # Explorer menu entries point at wherever Modlight.exe is when they are switched on.

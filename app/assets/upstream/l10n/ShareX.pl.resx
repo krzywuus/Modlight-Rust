@@ -1552,6 +1552,12 @@
   <data name="TaskSettingsWindow_AutomaticJPEG" xml:space="preserve">
     <value>Automatyczny JPEG</value>
   </data>
+  <data name="TaskSettingsWindow_Metadata" xml:space="preserve">
+    <value>Metadane</value>
+  </data>
+  <data name="TaskSettingsWindow_StripMetadata" xml:space="preserve">
+    <value>Usuwaj metadane (EXIF, lokalizacja, aparat) z obrazów przed wysłaniem</value>
+  </data>
   <data name="TaskSettingsWindow_ImageEffects" xml:space="preserve">
     <value>Efekty obrazu</value>
   </data>
@@ -4365,6 +4371,72 @@ Proszę wybrać inny skrót klawiszowy lub zamknąć konfliktową aplikację i p
   </data>
   <data name="Download_ErrorRaw" xml:space="preserve">
     <value>{0}</value>
+  </data>
+  <data name="Download_HostChallenge" xml:space="preserve">
+    <value>Serwis zablokował pobieranie. Spróbuj ponownie później.</value>
+  </data>
+  <data name="Download_HostGone" xml:space="preserve">
+    <value>Plik nie istnieje albo link wygasł.</value>
+  </data>
+  <data name="Download_HostNotAFile" xml:space="preserve">
+    <value>To nie jest link do pliku w tym serwisie.</value>
+  </data>
+  <data name="Download_HostNoLink" xml:space="preserve">
+    <value>Serwer nie podał linku do pliku (HTTP {0}).</value>
+  </data>
+  <data name="Download_HostStatus" xml:space="preserve">
+    <value>Serwer odpowiedział HTTP {0}.</value>
+  </data>
+  <data name="Download_HostShort" xml:space="preserve">
+    <value>Pobieranie urwało się na {0} z {1} bajtów.</value>
+  </data>
+  <data name="Download_HostBusy" xml:space="preserve">
+    <value>Ten plik pobiera już inny wiersz.</value>
+  </data>
+  <data name="Download_HostUnsupported" xml:space="preserve">
+    <value>Pobieranie z tego serwisu działa na razie tylko w Windows.</value>
+  </data>
+  <data name="Download_FormatFile" xml:space="preserve">
+    <value>Plik</value>
+  </data>
+  <data name="Download_ParallelLabel" xml:space="preserve">
+    <value>Równolegle</value>
+  </data>
+  <data name="Download_ParallelHint" xml:space="preserve">
+    <value>Ile pobrań działa jednocześnie</value>
+  </data>
+  <data name="Download_PageMedia" xml:space="preserve">
+    <value>Wideo i audio</value>
+  </data>
+  <data name="Download_PageBulk" xml:space="preserve">
+    <value>Wiele plików</value>
+  </data>
+  <data name="Download_BulkHint" xml:space="preserve">
+    <value>Wklej linki do plików z {0}, jeden w linii. Linie zaczynające się od # są pomijane, a powtórzony link pobiera się raz.</value>
+  </data>
+  <data name="Download_BulkWatermark" xml:space="preserve">
+    <value>Wklej tu linki, jeden w linii</value>
+  </data>
+  <data name="Download_BulkCount" xml:space="preserve">
+    <value>Linków: {0}</value>
+  </data>
+  <data name="Download_BulkSkipped" xml:space="preserve">
+    <value> · pominięte (inne serwisy): {0}</value>
+  </data>
+  <data name="Download_BulkStart" xml:space="preserve">
+    <value>Pobierz wszystkie</value>
+  </data>
+  <data name="Download_BulkNone" xml:space="preserve">
+    <value>Na liście nie ma linków do plików z tego serwisu.</value>
+  </data>
+  <data name="Download_ProfileLabel" xml:space="preserve">
+    <value>Profil przeglądarki</value>
+  </data>
+  <data name="Download_ProfileAuto" xml:space="preserve">
+    <value>Automatycznie</value>
+  </data>
+  <data name="Download_ProfileNote" xml:space="preserve">
+    <value>Jak Modlight przedstawia się serwisowi. Automatycznie przechodzi na kolejny profil po blokadzie; wybrany jest używany zawsze.</value>
   </data>
   <data name="Download_ErrorBotCheck" xml:space="preserve">
     <value>Serwis chce dowodu, że to nie bot, a do tego trzeba zalogowanej przeglądarki. Czasem pomaga otworzyć wideo najpierw w przeglądarce.</value>

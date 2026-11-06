@@ -86,6 +86,7 @@ pub const SCREENS: &[&str] = &[
     "tab-download",
     "tab-download-busy",
     "tab-download-missing",
+    "tab-download-bulk",
     "download-youtube",
     "components",
     "settings-components",

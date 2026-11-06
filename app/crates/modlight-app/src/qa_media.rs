@@ -23,6 +23,7 @@ pub const SCREENS: &[&str] = &[
     "tab-download",
     "tab-download-busy",
     "tab-download-missing",
+    "tab-download-bulk",
     "download-youtube",
     "components",
     "settings-components",
@@ -295,6 +296,53 @@ pub fn prepare(screen: &str, state: &mut AppState) -> Option<Vec2> {
             );
             settings::set_video_quality(&mut state.config, Quality::H1080);
             busy_queue(state);
+            crate::app::MAIN_SIZE
+        }
+        "tab-download-bulk" => {
+            state.tab = Tab::Download;
+            crate::download_tab::qa_fill(&mut state.downloads, tools(true, true), false);
+            settings::set_folder(
+                &mut state.config,
+                &crate::qa::fixture_path("/Users/alex/Downloads/Archives"),
+            );
+            state.downloads.page = crate::download_tab::DownloadPage::Bulk;
+            let host = modlight_core::download::filehost::HOST;
+            state.downloads.bulk_text = format!(
+                "# part 3 was re-uploaded\nhttps://{host}/w674u09fbhw0#Archive.part1.rar\n\
+                 https://{host}/k2j8d0aa1zq4#Archive.part2.rar\n\
+                 https://{host}/p0x7c3mm9sd2#Archive.part3.rar\n\
+                 https://youtu.be/dQw4w9WgXcQ"
+            );
+            let queue = crate::download_tab::qa_queue(&mut state.downloads);
+            let folder = PathBuf::from(crate::qa::fixture_path("/Users/alex/Downloads/Archives"));
+            let file = DownloadFormat::new(MediaKind::Video, Quality::Best, AudioFormat::M4a);
+            for (id, name) in [("a1", "Archive.part1.rar"), ("b2", "Archive.part2.rar")] {
+                let row = queue.enqueue(
+                    link(&format!("https://{host}/{id}")),
+                    folder.clone(),
+                    false,
+                    Destination::Disk,
+                    file,
+                    t(s::Download_FormatFile),
+                );
+                if let Some(item) = queue.get_mut(row) {
+                    item.named(name);
+                }
+            }
+            if let Some(item) = queue.items.last_mut() {
+                crate::download_tab::qa_progress(
+                    item,
+                    Progress {
+                        percent: 41.0,
+                        downloaded: 205_000_000,
+                        total: 500_000_000,
+                        speed: 11_500_000.0,
+                        eta: 26,
+                        is_working: false,
+                    },
+                    State::Downloading,
+                );
+            }
             crate::app::MAIN_SIZE
         }
         "tab-download-missing" => {

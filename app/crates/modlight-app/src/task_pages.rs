@@ -765,6 +765,16 @@ fn image(ui: &mut egui::Ui, ctx: &mut TaskPagesCtx, b: &mut Binder) {
         });
         },
     );
+    card(ui, colors, t(s::TaskSettingsWindow_Metadata), on, |ui| {
+        check(
+            ui,
+            colors,
+            b,
+            &i("StripMetadata"),
+            true,
+            t(s::TaskSettingsWindow_StripMetadata),
+        );
+    });
 }
 
 fn effects(ui: &mut egui::Ui, ctx: &mut TaskPagesCtx, b: &mut Binder) {
