@@ -15,7 +15,7 @@ use crate::tasks::context::TaskContext;
 use crate::tasks::gate;
 use crate::tasks::host::{MessageIcon, TaskAnswer, TaskEffect, TaskEvent, TaskQuestion};
 use crate::tasks::info::{DataType, TaskInfo, TaskJob, TaskMetadata, TaskStatus, UploadResult};
-use crate::tasks::naming;
+use crate::tasks::{metadata, naming};
 use crate::tasks::settings::{AfterCaptureTasks, AfterUploadTasks, TaskSettings};
 use crate::tasks::uploader;
 use crate::upload::queue::{LiveSession, TakeOver};
@@ -67,6 +67,9 @@ pub struct TaskState {
     /// The resumable session a large upload left on the server, for the next attempt or
     /// the offline queue to carry on from.
     pub live_session: Option<LiveSession>,
+    /// `data` is a copy of the file without its metadata: the file on disk is not what
+    /// goes up, so the offline queue must take the copy.
+    pub metadata_stripped: bool,
 }
 
 /// One task, as the task list holds it.
@@ -101,6 +104,7 @@ impl WorkerTask {
                 image: None,
                 last_answer: None,
                 live_session: None,
+                metadata_stripped: false,
             })),
             upload_cancel: CancellationToken::new(),
         }
@@ -1076,6 +1080,7 @@ impl WorkerTask {
             }
             log::info!("{text}");
         }
+        self.strip_metadata();
 
         let mut is_error = self.do_upload(ctx, 0).await;
         let retries = app.max_upload_fail_retry.max(0);
@@ -1113,22 +1118,60 @@ impl WorkerTask {
         !is_error && self.with(|s| !s.stop_requested && !s.info.result.url.is_empty())
     }
 
+    /// An image file goes up without its metadata, as a copy in memory; the file on disk
+    /// stays as it is. Only files: the app's own pictures are encoded without any.
+    fn strip_metadata(&self) {
+        use std::io::Read;
+        let (enabled, data) = self.with(|s| {
+            (
+                s.info.settings.image_settings.strip_metadata,
+                s.data.clone(),
+            )
+        });
+        let Some(TaskData::File(path)) = data.filter(|_| enabled) else {
+            return;
+        };
+        // The first bytes decide, so a large video is never read for nothing.
+        let mut head = [0u8; 12];
+        let supported = std::fs::File::open(&path)
+            .and_then(|mut file| file.read_exact(&mut head))
+            .is_ok_and(|()| metadata::is_supported(&head));
+        if !supported {
+            return;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            return;
+        };
+        if let Some(clean) = metadata::strip(&bytes) {
+            log::info!(
+                "Metadata removed before the upload: {} bytes fewer",
+                bytes.len() - clean.len()
+            );
+            self.with(|s| {
+                s.data = Some(TaskData::Bytes(Arc::new(clean)));
+                s.metadata_stripped = true;
+            });
+        }
+    }
+
     /// Give this upload to the offline queue, if it will have it (`HandOverToQueue`).
     /// The task then ends exactly as a stopped one does: no error, no URL expected, no
     /// after-upload work. The queue tells the person, once, and again when it goes.
     fn hand_over_to_queue(&self, ctx: &TaskContext) -> bool {
-        let (info, data, answer, session) = self.with(|s| {
+        let (info, data, answer, session, stripped) = self.with(|s| {
             (
                 s.info.clone(),
                 s.data.clone(),
                 s.last_answer,
                 s.live_session.clone(),
+                s.metadata_stripped,
             )
         });
         if !gate::uploads_to_modlight(&info) {
             return false;
         }
-        let file_path = Some(PathBuf::from(info.file_path())).filter(|p| p.is_file());
+        // A stripped copy is what goes up, not the file it came from.
+        let file_path = Some(PathBuf::from(info.file_path())).filter(|p| !stripped && p.is_file());
         let bytes = if file_path.is_none() {
             data.and_then(|d| d.bytes().ok())
         } else {

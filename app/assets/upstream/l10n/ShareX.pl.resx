@@ -1552,6 +1552,12 @@
   <data name="TaskSettingsWindow_AutomaticJPEG" xml:space="preserve">
     <value>Automatyczny JPEG</value>
   </data>
+  <data name="TaskSettingsWindow_Metadata" xml:space="preserve">
+    <value>Metadane</value>
+  </data>
+  <data name="TaskSettingsWindow_StripMetadata" xml:space="preserve">
+    <value>Usuwaj metadane (EXIF, lokalizacja, aparat) z obrazów przed wysłaniem</value>
+  </data>
   <data name="TaskSettingsWindow_ImageEffects" xml:space="preserve">
     <value>Efekty obrazu</value>
   </data>

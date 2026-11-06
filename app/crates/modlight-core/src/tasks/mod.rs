@@ -12,6 +12,7 @@ pub mod host;
 pub mod image;
 pub mod info;
 pub mod manager;
+pub mod metadata;
 pub mod naming;
 pub mod paste;
 pub mod recent;

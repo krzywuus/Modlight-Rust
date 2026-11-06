@@ -446,6 +446,9 @@ pub struct ImageSettings {
     pub thumbnail_height: i64,
     pub thumbnail_name: String,
     pub thumbnail_check_size: bool,
+    /// Modlight's own: an image file goes up without its EXIF, XMP and the like
+    /// (`tasks::metadata`). On unless switched off.
+    pub strip_metadata: bool,
 }
 
 impl Default for ImageSettings {
@@ -467,6 +470,7 @@ impl Default for ImageSettings {
             thumbnail_height: 0,
             thumbnail_name: "-thumbnail".into(),
             thumbnail_check_size: false,
+            strip_metadata: true,
         }
     }
 }
