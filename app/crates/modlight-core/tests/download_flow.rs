@@ -192,7 +192,7 @@ fn a_fake_yt_dlp_run_is_read_queued_and_uploaded() {
         DownloadFormat::new(MediaKind::Video, Quality::H1080, AudioFormat::M4a),
         "1080p",
     );
-    assert_eq!(queue.next_to_start(), Some(id));
+    assert_eq!(queue.next_to_start(1, |_| true), Some(id));
     let cancel = queue.get_mut(id).unwrap().start().unwrap();
     let events = Arc::new(Mutex::new(Vec::new()));
     let sink = events.clone();

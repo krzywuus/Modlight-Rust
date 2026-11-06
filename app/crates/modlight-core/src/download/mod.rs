@@ -4,6 +4,7 @@
 
 pub mod cookies;
 pub mod error;
+pub mod filehost;
 pub mod format;
 pub mod item;
 pub mod link;
@@ -125,6 +126,32 @@ pub mod settings {
         config.set("DownloadFolder", json!(value.trim()));
     }
 
+    /// How many rows download at once: 1 to [`MAX_PARALLEL`], 3 unless chosen.
+    pub fn parallel(config: &AppConfig) -> usize {
+        config
+            .get("DownloadParallel")
+            .and_then(Value::as_u64)
+            .map_or(3, |n| n.clamp(1, MAX_PARALLEL as u64) as usize)
+    }
+
+    pub fn set_parallel(config: &mut AppConfig, value: usize) {
+        config.set("DownloadParallel", json!(value.clamp(1, MAX_PARALLEL)));
+    }
+
+    /// The browser profile the file host's downloads use alone (one of
+    /// `filehost::BROWSER_PROFILES`), or `None` for Automatic.
+    pub fn browser_profile(config: &AppConfig) -> Option<String> {
+        config
+            .get("DownloadBrowserProfile")
+            .and_then(Value::as_str)
+            .filter(|name| super::filehost::BROWSER_PROFILES.contains(name))
+            .map(str::to_string)
+    }
+
+    pub fn set_browser_profile(config: &mut AppConfig, value: Option<&str>) {
+        config.set("DownloadBrowserProfile", json!(value.unwrap_or("Auto")));
+    }
+
     /// `BinaryUnits`: local sizes in KiB and MiB.
     pub fn binary_units(config: &AppConfig) -> bool {
         config
@@ -142,6 +169,9 @@ pub mod settings {
         )
     }
 }
+
+/// The most rows the queue runs at once.
+pub const MAX_PARALLEL: usize = 10;
 
 /// Where a Modlight-only download's copy lives until the upload has had it.
 pub fn scratch_folder() -> std::path::PathBuf {
@@ -195,5 +225,17 @@ mod tests {
         assert_eq!(settings::folder(&config), "/Users/alex/Movies");
         config.set("DownloadMediaKind", json!("Nonsense"));
         assert_eq!(settings::media_kind(&config), MediaKind::Video);
+        assert_eq!(settings::parallel(&config), 3);
+        settings::set_parallel(&mut config, 50);
+        assert_eq!(settings::parallel(&config), MAX_PARALLEL);
+        config.set("DownloadParallel", json!(0));
+        assert_eq!(settings::parallel(&config), 1);
+        assert_eq!(settings::browser_profile(&config), None);
+        settings::set_browser_profile(&mut config, Some("Edge148"));
+        assert_eq!(settings::browser_profile(&config).as_deref(), Some("Edge148"));
+        settings::set_browser_profile(&mut config, None);
+        assert_eq!(settings::browser_profile(&config), None);
+        config.set("DownloadBrowserProfile", json!("Netscape4"));
+        assert_eq!(settings::browser_profile(&config), None, "an unknown name is Automatic");
     }
 }

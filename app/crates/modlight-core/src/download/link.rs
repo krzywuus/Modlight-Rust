@@ -21,6 +21,8 @@ pub struct DownloadLink {
     pub source: String,
     /// Decides the codec preference and whether the YouTube sign-in is used.
     pub is_youtube: bool,
+    /// fuckingfast.co: fetched by `filehost`, not by yt-dlp.
+    pub is_file_host: bool,
 }
 
 impl DownloadLink {
@@ -45,9 +47,40 @@ impl DownloadLink {
         Some(DownloadLink {
             url: url.to_string(),
             is_youtube: is_youtube_host(&host),
+            is_file_host: super::filehost::is_host(&host),
             source,
         })
     }
+}
+
+/// Every address in a pasted text, in order, each once (`load_links` of ff_dl.py): a
+/// line starting with `#` is a comment, and around an address anything may stand (a
+/// list's numbering, a file name after a tab).
+pub fn links_in(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = [rest.find("http://"), rest.find("https://")]
+            .into_iter()
+            .flatten()
+            .min()
+        {
+            let tail = &rest[at..];
+            let end = tail
+                .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '\''))
+                .unwrap_or(tail.len());
+            let link = tail[..end].trim_end_matches([')', ',', '.', ';']);
+            if !out.iter().any(|seen| seen == link) {
+                out.push(link.to_string());
+            }
+            rest = &tail[end..];
+        }
+    }
+    out
 }
 
 /// Suffix matching with the dot included, never `contains`: "youtube.com.example.org"
@@ -99,6 +132,36 @@ mod tests {
         }
         let long = format!("https://example.com/{}", "a".repeat(MAX_LENGTH));
         assert!(DownloadLink::parse(&long).is_none());
+    }
+
+    #[test]
+    fn pasted_lists_give_their_addresses_once_each() {
+        use crate::download::filehost::HOST;
+        let file = format!("https://{HOST}/w674u09fbhw0#Archive.part1.rar");
+        let text = format!(
+            "# https://{HOST}/f/AbCdEf123 is an example\r\n\
+             1. {file}\r\n\
+             \t{file}\n\
+             (see https://youtu.be/x), and http://example.com/a.\n\
+             two on a line: https://a.example/1 https://b.example/2"
+        );
+        assert_eq!(
+            links_in(&text),
+            [
+                file.as_str(),
+                "https://youtu.be/x",
+                "http://example.com/a",
+                "https://a.example/1",
+                "https://b.example/2",
+            ]
+        );
+        assert!(links_in("no links here").is_empty());
+        let host = DownloadLink::parse(&file).unwrap();
+        assert!(host.is_file_host && !host.is_youtube);
+        let direct = DownloadLink::parse(&format!("https://dl.{HOST}/x")).unwrap();
+        assert!(direct.is_file_host);
+        let look_alike = DownloadLink::parse(&format!("https://{HOST}.evil.example/f/x")).unwrap();
+        assert!(!look_alike.is_file_host);
     }
 
     #[test]

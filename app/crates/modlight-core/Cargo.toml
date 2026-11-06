@@ -20,6 +20,7 @@ rusqlite.workspace = true
 tokio = { workspace = true, features = ["process"] }
 tokio-util.workspace = true
 url.workspace = true
+percent-encoding.workspace = true
 notify.workspace = true
 image.workspace = true
 regex = "1"
@@ -42,6 +43,10 @@ dirs.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 ort = { workspace = true, features = ["directml", "copy-dylibs"] }
+# The file host downloads, Windows only for now (a Mac build would need cmake too).
+wreq.workspace = true
+wreq-util.workspace = true
+futures-util.workspace = true
 # Windows: job objects for child processes, free disk space, file identity, the
 # shell's known folders, environment strings, the computer's and the user's names.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authentication_Identity", "Win32_Security_Authorization", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Environment", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming", "Win32_UI_Shell"] }

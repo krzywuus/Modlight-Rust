@@ -470,15 +470,20 @@ impl DownloadQueue {
         self.items.iter().any(DownloadItem::is_finished)
     }
 
-    /// The next row to start, or `None` while one is running (`Pump`).
-    pub fn next_to_start(&self) -> Option<u64> {
-        if self.items.iter().any(DownloadItem::is_active) {
+    /// The next row to start (`Pump`): the oldest waiting row `can_run` lets go, while
+    /// fewer than `limit` rows run (upstream ran one; the person chooses here).
+    pub fn next_to_start(
+        &self,
+        limit: usize,
+        can_run: impl Fn(&DownloadItem) -> bool,
+    ) -> Option<u64> {
+        if self.items.iter().filter(|i| i.is_active()).count() >= limit.max(1) {
             return None;
         }
         self.items
             .iter()
             .rev()
-            .find(|i| i.state == State::Queued)
+            .find(|i| i.state == State::Queued && can_run(i))
             .map(|i| i.id)
     }
 
@@ -522,11 +527,12 @@ mod tests {
 
     #[test]
     fn the_oldest_waiting_row_runs_first_and_alone() {
+        let any = |_: &DownloadItem| true;
         let mut queue = queue_with(3);
         assert_eq!(queue.items[0].id, 3, "newest on top");
-        assert_eq!(queue.next_to_start(), Some(1));
+        assert_eq!(queue.next_to_start(1, any), Some(1));
         let token = queue.get_mut(1).unwrap().start().unwrap();
-        assert_eq!(queue.next_to_start(), None);
+        assert_eq!(queue.next_to_start(1, any), None);
         queue.get_mut(1).unwrap().pause();
         assert!(token.is_cancelled());
         queue.get_mut(1).unwrap().finish(
@@ -537,9 +543,23 @@ mod tests {
             false,
         );
         assert_eq!(queue.get(1).unwrap().state, State::Paused);
-        assert_eq!(queue.next_to_start(), Some(2));
+        assert_eq!(queue.next_to_start(1, any), Some(2));
         queue.get_mut(1).unwrap().resume();
-        assert_eq!(queue.next_to_start(), Some(1));
+        assert_eq!(queue.next_to_start(1, any), Some(1));
+    }
+
+    #[test]
+    fn up_to_the_limit_run_at_once_and_a_row_that_cannot_run_waits() {
+        let any = |_: &DownloadItem| true;
+        let mut queue = queue_with(4);
+        for expected in [1, 2, 3] {
+            assert_eq!(queue.next_to_start(3, any), Some(expected));
+            queue.get_mut(expected).unwrap().start();
+        }
+        assert_eq!(queue.next_to_start(3, any), None, "three run");
+        assert_eq!(queue.next_to_start(4, any), Some(4));
+        assert_eq!(queue.next_to_start(4, |i: &DownloadItem| i.id != 4), None);
+        assert_eq!(queue.next_to_start(0, any), None, "never fewer than one");
     }
 
     #[test]

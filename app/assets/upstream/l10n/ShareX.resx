@@ -4372,6 +4372,72 @@ Please select a different hotkey or quit the conflicting application and reopen 
   <data name="Download_ErrorRaw" xml:space="preserve">
     <value>{0}</value>
   </data>
+  <data name="Download_HostChallenge" xml:space="preserve">
+    <value>The site blocked the download. Try again later.</value>
+  </data>
+  <data name="Download_HostGone" xml:space="preserve">
+    <value>The file does not exist or the link has expired.</value>
+  </data>
+  <data name="Download_HostNotAFile" xml:space="preserve">
+    <value>This is not a link to a file on this host.</value>
+  </data>
+  <data name="Download_HostNoLink" xml:space="preserve">
+    <value>The server gave no link to the file (HTTP {0}).</value>
+  </data>
+  <data name="Download_HostStatus" xml:space="preserve">
+    <value>The server answered HTTP {0}.</value>
+  </data>
+  <data name="Download_HostShort" xml:space="preserve">
+    <value>The download stopped at {0} of {1} bytes.</value>
+  </data>
+  <data name="Download_HostBusy" xml:space="preserve">
+    <value>Another row is already downloading this file.</value>
+  </data>
+  <data name="Download_HostUnsupported" xml:space="preserve">
+    <value>Downloads from this host work only on Windows for now.</value>
+  </data>
+  <data name="Download_FormatFile" xml:space="preserve">
+    <value>File</value>
+  </data>
+  <data name="Download_ParallelLabel" xml:space="preserve">
+    <value>At once</value>
+  </data>
+  <data name="Download_ParallelHint" xml:space="preserve">
+    <value>How many downloads run at the same time</value>
+  </data>
+  <data name="Download_PageMedia" xml:space="preserve">
+    <value>Video and audio</value>
+  </data>
+  <data name="Download_PageBulk" xml:space="preserve">
+    <value>Many files</value>
+  </data>
+  <data name="Download_BulkHint" xml:space="preserve">
+    <value>Paste links to files on {0}, one a line. Lines starting with # are skipped and a link given twice is downloaded once.</value>
+  </data>
+  <data name="Download_BulkWatermark" xml:space="preserve">
+    <value>Paste the links here, one a line</value>
+  </data>
+  <data name="Download_BulkCount" xml:space="preserve">
+    <value>Links: {0}</value>
+  </data>
+  <data name="Download_BulkSkipped" xml:space="preserve">
+    <value> · skipped (other sites): {0}</value>
+  </data>
+  <data name="Download_BulkStart" xml:space="preserve">
+    <value>Download all</value>
+  </data>
+  <data name="Download_BulkNone" xml:space="preserve">
+    <value>The list holds no links to files on this host.</value>
+  </data>
+  <data name="Download_ProfileLabel" xml:space="preserve">
+    <value>Browser profile</value>
+  </data>
+  <data name="Download_ProfileAuto" xml:space="preserve">
+    <value>Automatic</value>
+  </data>
+  <data name="Download_ProfileNote" xml:space="preserve">
+    <value>How Modlight presents itself to the site. Automatic moves to the next profile when one is blocked; a chosen one is used alone.</value>
+  </data>
   <data name="Download_ErrorBotCheck" xml:space="preserve">
     <value>The site wants proof this is not a bot, which takes a signed-in browser. Opening the video in a browser first sometimes clears it.</value>
   </data>
